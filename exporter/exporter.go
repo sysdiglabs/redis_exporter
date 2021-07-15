@@ -1,8 +1,6 @@
 package exporter
 
 import (
-	"crypto/tls"
-	"crypto/x509"
 	"fmt"
 	"net/http"
 	"runtime"
@@ -61,8 +59,9 @@ type Options struct {
 	MaxDistinctKeyGroups  int64
 	CountKeys             string
 	LuaScript             []byte
-	ClientCertificates    []tls.Certificate
-	CaCertificates        *x509.CertPool
+	ClientCertFile        string
+	ClientKeyFile         string
+	CaCertFile            string
 	InclSystemMetrics     bool
 	SkipTLSVerification   bool
 	SetClientName         bool
@@ -528,7 +527,7 @@ func (e *Exporter) scrapeRedisHost(ch chan<- prometheus.Metric) error {
 	}
 
 	infoAll, err := redis.String(doRedisCmd(c, "INFO", "ALL"))
-	if err != nil {
+	if err != nil || infoAll == "" {
 		log.Debugf("Redis INFO ALL err: %s", err)
 		infoAll, err = redis.String(doRedisCmd(c, "INFO"))
 		if err != nil {
