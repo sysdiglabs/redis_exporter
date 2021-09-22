@@ -68,7 +68,7 @@ services:
 
 steps:
   - name: start
-    image: "golang:1.16"
+    image: "golang:1.17"
     commands:
       - sleep 10
       - 'echo "start"'
@@ -99,7 +99,7 @@ steps:
       - start
 
   - name: build-binaries
-    image: "golang:1.16"
+    image: "golang:1.17"
     pull: always
     environment:
       GO111MODULE: on
@@ -139,7 +139,7 @@ steps:
       - start
 
   - name: lint
-    image: golangci/golangci-lint:latest-alpine
+    image: golangci/golangci-lint@sha256:39e13a431c69fca37f88ab4b2340655eef7d7d18373df10d5e737f0b77866747
     pull: always
     commands:
       - apk add --update make
@@ -153,7 +153,7 @@ steps:
       - start
 
   - name: tests
-    image: "golang:1.16"
+    image: "golang:1.17"
     pull: always
     environment:
       GO111MODULE: on
@@ -164,17 +164,20 @@ steps:
       - sleep 5
       - make checks
       - make test
-      - make upload-coverage
+# coveralls seems to have issues right now
+# https://github.com/lemurheavy/coveralls-public/issues/1573
+#      - make upload-coverage
     when:
       event:
         - pull_request
         - push
+        - tag
     depends_on:
       - build-binaries
 
 
   - name: mixins
-    image: golang:1.16
+    image: golang:1.17
     commands:
       - cd ./contrib/redis-mixin
       - go install github.com/monitoring-mixins/mixtool/cmd/mixtool
@@ -292,8 +295,95 @@ steps:
       - tests
 
 
+###########
+#
+# Mirroring the docker images to quay.io
+#
+  - name: release-quay-scratch
+    image: plugins/docker
+    settings:
+      registry: "quay.io"
+      repo: "quay.io/oliver006/redis_exporter"
+      tags: "latest,latest-amd64,${DRONE_TAG},${DRONE_TAG}-amd64"
+      dockerfile: ./docker/Dockerfile.amd64
+      target: scratch
+      build_args:
+        - 'TAG=${DRONE_TAG}'
+        - 'SHA1=${DRONE_COMMIT_SHA}'
+        - 'GOARCH=amd64'
+      config:
+        from_secret: docker_config_json
+    when:
+      event:
+        - tag
+    depends_on:
+      - tests
+
+
+  - name: release-quay-alpine-arm64
+    image: plugins/docker
+    settings:
+      registry: "quay.io"
+      repo: "quay.io/oliver006/redis_exporter"
+      tags: "latest-arm64,${DRONE_TAG}-arm64"
+      dockerfile: ./docker/Dockerfile.arm64
+      target: alpine-arm64
+      build_args:
+        - 'TAG=${DRONE_TAG}'
+        - 'SHA1=${DRONE_COMMIT_SHA}'
+        - 'GOARCH=arm64'
+      config:
+        from_secret: docker_config_json
+    when:
+      event:
+        - tag
+    depends_on:
+      - tests
+
+
+  - name: release-quay-alpine-arm
+    image: plugins/docker
+    settings:
+      registry: "quay.io"
+      repo: "quay.io/oliver006/redis_exporter"
+      tags: "latest-arm,${DRONE_TAG}-arm"
+      dockerfile: ./docker/Dockerfile.arm
+      target: alpine-arm
+      build_args:
+        - 'TAG=${DRONE_TAG}'
+        - 'SHA1=${DRONE_COMMIT_SHA}'
+        - 'GOARCH=arm'
+      config:
+        from_secret: docker_config_json
+    when:
+      event:
+        - tag
+    depends_on:
+      - tests
+
+
+  - name: release-quay-alpine-amd64
+    image: plugins/docker
+    settings:
+      registry: "quay.io"
+      repo: "quay.io/oliver006/redis_exporter"
+      tags: "alpine,${DRONE_TAG}-alpine"
+      dockerfile: ./docker/Dockerfile.amd64
+      target: alpine
+      build_args:
+        - 'TAG=${DRONE_TAG}'
+        - 'SHA1=${DRONE_COMMIT_SHA}'
+        - 'GOARCH=amd64'
+      config:
+        from_secret: docker_config_json
+    when:
+      event:
+        - tag
+    depends_on:
+      - tests
+
   - name: release-github-binaries
-    image: "golang:1.16"
+    image: "golang:1.17"
     pull: always
     environment:
       GITHUB_TOKEN:
