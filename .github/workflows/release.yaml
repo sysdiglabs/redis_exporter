@@ -6,7 +6,10 @@ jobs:
   buildDockerImage:
     env:
       EXPORTER_NAME: redis-exporter
-    name: Build docker image
+    strategy:
+      matrix:
+        docker: ['scratch','ubi']
+    name: Build docker image ${{ matrix.docker }}
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@master
@@ -21,13 +24,11 @@ jobs:
       run: exit 78
     - name: Build image
       run: |
-        docker build --label release=${{ github.event.release.tag_name }} -f ./docker/Dockerfile --target scratch -t artifactory.internal.sysdig.com/$EXPORTER_NAME:latest .
-        docker build --label release=${{ github.event.release.tag_name }} -f ./docker/Dockerfile --target ubi -t artifactory.internal.sysdig.com/$EXPORTER_NAME:${{ github.event.release.tag_name }}-ubi .
+        docker build --label release=${{ github.event.release.tag_name }} -f ./docker/Dockerfile --target ${{ matrix.docker }} -t artifactory.internal.sysdig.com/$EXPORTER_NAME:latest .
     - name: Publish docker image
       run: |
         docker tag artifactory.internal.sysdig.com/$EXPORTER_NAME:latest artifactory.internal.sysdig.com/$EXPORTER_NAME:${{ github.event.release.tag_name }}
-        docker push artifactory.internal.sysdig.com/$EXPORTER_NAME:${{ github.event.release.tag_name }}
-        docker push artifactory.internal.sysdig.com/$EXPORTER_NAME:${{ github.event.release.tag_name }}-ubi
+        docker push artifactory.internal.sysdig.com/$EXPORTER_NAME:${{ github.event.release.tag_name }}-${{ matrix.docker }}
         docker push artifactory.internal.sysdig.com/$EXPORTER_NAME:latest
     - name: Upload master to Quay.io
       uses: fjogeleit/http-request-action@master
