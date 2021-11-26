@@ -48,7 +48,7 @@ services:
     ports: [7000, 7001, 7002, 7003, 7004, 7005]
 
   redis-sentinel:
-    image: docker.io/bitnami/redis-sentinel:6.0-debian-10
+    image: docker.io/bitnami/redis-sentinel:6.2-debian-10
     environment:
       - REDIS_MASTER_HOST=redis6
     ports:
@@ -61,7 +61,7 @@ services:
 
 
   tests:
-    image: golang:1.16
+    image: golang:1.17
     working_dir: /go/src/github.com/oliver006/redis_exporter
     volumes:
       - ..:/go/src/github.com/oliver006/redis_exporter

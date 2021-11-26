@@ -66,6 +66,7 @@ type Options struct {
 	SkipTLSVerification   bool
 	SetClientName         bool
 	IsTile38              bool
+	IsCluster             bool
 	ExportClientList      bool
 	ExportClientsInclPort bool
 	ConnectionTimeouts    time.Duration
@@ -310,7 +311,7 @@ func NewRedisExporter(redisURI string, opts Options) (*Exporter, error) {
 
 	e.metricDescriptions = map[string]*prometheus.Desc{}
 
-	connectedClientsLabels := []string{"name", "age", "idle", "flags", "db", "omem", "cmd", "host"}
+	connectedClientsLabels := []string{"name", "created_at", "idle_since", "flags", "db", "omem", "cmd", "host"}
 	if e.options.ExportClientsInclPort {
 		connectedClientsLabels = append(connectedClientsLabels, "port")
 	}
@@ -465,13 +466,15 @@ func (e *Exporter) extractConfigMetrics(ch chan<- prometheus.Metric, config []st
 
 		// todo: we can add more configs to this map if there's interest
 		if !map[string]bool{
-			"maxmemory":  true,
+			"io-threads": true,
 			"maxclients": true,
+			"maxmemory":  true,
 		}[strKey] {
 			continue
 		}
 
 		if val, err := strconv.ParseFloat(strVal, 64); err == nil {
+			strKey = strings.ReplaceAll(strKey, "-", "_")
 			e.registerConstMetricGauge(ch, fmt.Sprintf("config_%s", strKey), val)
 		}
 	}
@@ -559,7 +562,18 @@ func (e *Exporter) scrapeRedisHost(ch chan<- prometheus.Metric) error {
 
 	e.extractLatencyMetrics(ch, c)
 
-	e.extractCheckKeyMetrics(ch, c)
+	if e.options.IsCluster {
+		clusterClient, err := e.connectToRedisCluster()
+		if err != nil {
+			log.Errorf("Couldn't connect to redis cluster")
+			return err
+		}
+		defer clusterClient.Close()
+
+		e.extractCheckKeyMetrics(ch, clusterClient)
+	} else {
+		e.extractCheckKeyMetrics(ch, c)
+	}
 
 	e.extractSlowLogMetrics(ch, c)
 
