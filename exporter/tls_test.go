@@ -39,6 +39,38 @@ func TestCreateClientTLSConfig(t *testing.T) {
 	}
 }
 
+func TestCreateServerTLSConfig(t *testing.T) {
+	e := getTestExporter()
+
+	// positive tests
+	_, err := e.CreateServerTLSConfig("../contrib/tls/redis.crt", "../contrib/tls/redis.key", "", "TLS1.1")
+	if err != nil {
+		t.Errorf("CreateServerTLSConfig() err: %s", err)
+	}
+	_, err = e.CreateServerTLSConfig("../contrib/tls/redis.crt", "../contrib/tls/redis.key", "../contrib/tls/ca.crt", "TLS1.0")
+	if err != nil {
+		t.Errorf("CreateServerTLSConfig() err: %s", err)
+	}
+
+	// negative tests
+	_, err = e.CreateServerTLSConfig("/nonexisting/file", "/nonexisting/file", "", "TLS1.1")
+	if err == nil {
+		t.Errorf("Expected CreateServerTLSConfig() to fail")
+	}
+	_, err = e.CreateServerTLSConfig("/nonexisting/file", "/nonexisting/file", "/nonexisting/file", "TLS1.2")
+	if err == nil {
+		t.Errorf("Expected CreateServerTLSConfig() to fail")
+	}
+	_, err = e.CreateServerTLSConfig("../contrib/tls/redis.crt", "../contrib/tls/redis.key", "/nonexisting/file", "TLS1.3")
+	if err == nil {
+		t.Errorf("Expected CreateServerTLSConfig() to fail")
+	}
+	_, err = e.CreateServerTLSConfig("../contrib/tls/redis.crt", "../contrib/tls/redis.key", "../contrib/tls/ca.crt", "TLSX")
+	if err == nil {
+		t.Errorf("Expected CreateServerTLSConfig() to fail")
+	}
+}
+
 func TestGetServerCertificateFunc(t *testing.T) {
 	// positive test
 	_, err := GetServerCertificateFunc("../contrib/tls/ca.crt", "../contrib/tls/ca.key")(nil)
@@ -50,5 +82,19 @@ func TestGetServerCertificateFunc(t *testing.T) {
 	_, err = GetServerCertificateFunc("/nonexisting/file", "/nonexisting/file")(nil)
 	if err == nil {
 		t.Errorf("Expected GetServerCertificateFunc() to fail")
+	}
+}
+
+func TestGetConfigForClientFunc(t *testing.T) {
+	// positive test
+	_, err := GetConfigForClientFunc("../contrib/tls/redis.crt", "../contrib/tls/redis.key", "../contrib/tls/ca.crt")(nil)
+	if err != nil {
+		t.Errorf("GetConfigForClientFunc() err: %s", err)
+	}
+
+	// negative test
+	_, err = GetConfigForClientFunc("/nonexisting/file", "/nonexisting/file", "/nonexisting/file")(nil)
+	if err == nil {
+		t.Errorf("Expected GetConfigForClientFunc() to fail")
 	}
 }

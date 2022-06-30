@@ -1,7 +1,6 @@
 package main
 
 import (
-	"crypto/tls"
 	"flag"
 	"io/ioutil"
 	"net/http"
@@ -77,6 +76,8 @@ func main() {
 		tlsCaCertFile        = flag.String("tls-ca-cert-file", getEnv("REDIS_EXPORTER_TLS_CA_CERT_FILE", ""), "Name of the CA certificate file (including full path) if the server requires TLS client authentication")
 		tlsServerKeyFile     = flag.String("tls-server-key-file", getEnv("REDIS_EXPORTER_TLS_SERVER_KEY_FILE", ""), "Name of the server key file (including full path) if the web interface and telemetry should use TLS")
 		tlsServerCertFile    = flag.String("tls-server-cert-file", getEnv("REDIS_EXPORTER_TLS_SERVER_CERT_FILE", ""), "Name of the server certificate file (including full path) if the web interface and telemetry should use TLS")
+		tlsServerCaCertFile  = flag.String("tls-server-ca-cert-file", getEnv("REDIS_EXPORTER_TLS_SERVER_CA_CERT_FILE", ""), "Name of the CA certificate file (including full path) if the web interface and telemetry should require TLS client authentication")
+		tlsServerMinVersion  = flag.String("tls-server-min-version", getEnv("REDIS_EXPORTER_TLS_SERVER_MIN_VERSION", "TLS1.2"), "Minimum TLS version that is acceptable by the web interface and telemetry when using TLS")
 		maxDistinctKeyGroups = flag.Int64("max-distinct-key-groups", getEnvInt64("REDIS_EXPORTER_MAX_DISTINCT_KEY_GROUPS", 100), "The maximum number of distinct key groups with the most memory utilization to present as distinct metrics per database, the leftover key groups will be aggregated in the 'overflow' bucket")
 		isDebug              = flag.Bool("debug", getEnvBool("REDIS_EXPORTER_DEBUG", false), "Output verbose debug information")
 		setClientName        = flag.Bool("set-client-name", getEnvBool("REDIS_EXPORTER_SET_CLIENT_NAME", true), "Whether to set client name to redis_exporter")
@@ -87,6 +88,8 @@ func main() {
 		showVersion          = flag.Bool("version", false, "Show version information and exit")
 		redisMetricsOnly     = flag.Bool("redis-only-metrics", getEnvBool("REDIS_EXPORTER_REDIS_ONLY_METRICS", false), "Whether to also export go runtime metrics")
 		pingOnConnect        = flag.Bool("ping-on-connect", getEnvBool("REDIS_EXPORTER_PING_ON_CONNECT", false), "Whether to ping the redis instance after connecting")
+		inclConfigMetrics    = flag.Bool("include-config-metrics", getEnvBool("REDIS_EXPORTER_INCL_CONFIG_METRICS", false), "Whether to include all config settings as metrics")
+		redactConfigMetrics  = flag.Bool("redact-config-metrics", getEnvBool("REDIS_EXPORTER_REDACT_CONFIG_METRICS", true), "Whether to redact config settings that include potentially sensitive information like passwords")
 		inclSystemMetrics    = flag.Bool("include-system-metrics", getEnvBool("REDIS_EXPORTER_INCL_SYSTEM_METRICS", false), "Whether to include system metrics like e.g. redis_total_system_memory_bytes")
 		skipTLSVerification  = flag.Bool("skip-tls-verification", getEnvBool("REDIS_EXPORTER_SKIP_TLS_VERIFICATION", false), "Whether to to skip TLS verification")
 	)
@@ -98,21 +101,23 @@ func main() {
 	default:
 		log.SetFormatter(&log.TextFormatter{})
 	}
+	if *showVersion {
+		log.SetOutput(os.Stdout)
+	}
 	log.Printf("Redis Metrics Exporter %s    build date: %s    sha1: %s    Go: %s    GOOS: %s    GOARCH: %s",
 		BuildVersion, BuildDate, BuildCommitSha,
 		runtime.Version(),
 		runtime.GOOS,
 		runtime.GOARCH,
 	)
+	if *showVersion {
+		return
+	}
 	if *isDebug {
 		log.SetLevel(log.DebugLevel)
 		log.Debugln("Enabling debug output")
 	} else {
 		log.SetLevel(log.InfoLevel)
-	}
-
-	if *showVersion {
-		return
 	}
 
 	to, err := time.ParseDuration(*connectionTimeout)
@@ -158,6 +163,8 @@ func main() {
 			CountKeys:             *countKeys,
 			LuaScript:             ls,
 			InclSystemMetrics:     *inclSystemMetrics,
+			InclConfigMetrics:     *inclConfigMetrics,
+			RedactConfigMetrics:   *redactConfigMetrics,
 			SetClientName:         *setClientName,
 			IsTile38:              *isTile38,
 			IsCluster:             *isCluster,
@@ -197,14 +204,14 @@ func main() {
 	if *tlsServerCertFile != "" && *tlsServerKeyFile != "" {
 		log.Debugf("Bind as TLS using cert %s and key %s", *tlsServerCertFile, *tlsServerKeyFile)
 
-		// Verify that the initial key pair is accepted
-		_, err := exporter.LoadKeyPair(*tlsServerCertFile, *tlsServerKeyFile)
+		tlsConfig, err := exp.CreateServerTLSConfig(*tlsServerCertFile, *tlsServerKeyFile, *tlsServerCaCertFile, *tlsServerMinVersion)
 		if err != nil {
-			log.Fatalf("Couldn't load TLS server key pair, err: %s", err)
+			log.Fatal(err)
 		}
+
 		server := &http.Server{
 			Addr:      *listenAddress,
-			TLSConfig: &tls.Config{GetCertificate: exporter.GetServerCertificateFunc(*tlsServerCertFile, *tlsServerKeyFile)},
+			TLSConfig: tlsConfig,
 			Handler:   exp}
 		log.Fatal(server.ListenAndServeTLS("", ""))
 	} else {

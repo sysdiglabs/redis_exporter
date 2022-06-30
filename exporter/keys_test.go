@@ -24,30 +24,64 @@ const (
 func TestKeyValuesAndSizes(t *testing.T) {
 	e, _ := NewRedisExporter(
 		os.Getenv("TEST_REDIS_URI"),
-		Options{Namespace: "test", CheckSingleKeys: dbNumStrFull + "=" + url.QueryEscape(keys[0])},
+		Options{
+			Namespace:       "test",
+			CheckSingleKeys: dbNumStrFull + "=" + url.QueryEscape(keys[0]),
+			Registry:        prometheus.NewRegistry()},
 	)
+	ts := httptest.NewServer(e)
+	defer ts.Close()
 
 	setupDBKeys(t, os.Getenv("TEST_REDIS_URI"))
 	defer deleteKeysFromDB(t, os.Getenv("TEST_REDIS_URI"))
 
-	chM := make(chan prometheus.Metric)
+	chM := make(chan prometheus.Metric, 10000)
 	go func() {
 		e.Collect(chM)
 		close(chM)
 	}()
 
-	want := map[string]bool{"test_key_size": false, "test_key_value": false}
-
-	for m := range chM {
-		for k := range want {
-			if strings.Contains(m.Desc().String(), k) {
-				want[k] = true
-			}
+	body := downloadURL(t, ts.URL+"/metrics")
+	for _, want := range []string{
+		"test_key_size",
+		"test_key_value",
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("didn't find %s, body: %s", want, body)
+			return
 		}
 	}
-	for k, found := range want {
-		if !found {
-			t.Errorf("didn't find %s", k)
+}
+
+func TestKeyValuesAsLabel(t *testing.T) {
+	e, _ := NewRedisExporter(
+		os.Getenv("TEST_REDIS_URI"),
+		Options{
+			Namespace:       "test",
+			CheckSingleKeys: dbNumStrFull + "=" + url.QueryEscape(singleStringKey),
+			Registry:        prometheus.NewRegistry()},
+	)
+	ts := httptest.NewServer(e)
+	defer ts.Close()
+
+	setupDBKeys(t, os.Getenv("TEST_REDIS_URI"))
+	defer deleteKeysFromDB(t, os.Getenv("TEST_REDIS_URI"))
+
+	chM := make(chan prometheus.Metric, 10000)
+	go func() {
+		e.Collect(chM)
+		close(chM)
+	}()
+
+	body := downloadURL(t, ts.URL+"/metrics")
+	for _, want := range []string{
+		"test_key_size",
+		"test_key_value",
+		"key_value_as_string",
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("didn't find %s, body: %s", want, body)
+			return
 		}
 	}
 }
@@ -61,7 +95,7 @@ func TestClusterKeyValuesAndSizes(t *testing.T) {
 	uri := os.Getenv("TEST_REDIS_CLUSTER_MASTER_URI")
 
 	setupDBKeysCluster(t, uri)
-	defer deleteKeysFromDBCluster(t, uri)
+	defer deleteKeysFromDBCluster(uri)
 
 	chM := make(chan prometheus.Metric)
 	go func() {
@@ -253,7 +287,7 @@ func deleteKeyFixtures(t *testing.T, c redis.Conn, fixtures []keyFixture) {
 
 func TestScanKeys(t *testing.T) {
 	numKeys := 1000
-	fixtures := []keyFixture{}
+	var fixtures []keyFixture
 
 	// Make 1000 keys that match
 	for i := 0; i < numKeys; i++ {

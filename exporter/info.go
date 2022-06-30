@@ -24,9 +24,25 @@ func extractVal(s string) (val float64, err error) {
 	return
 }
 
+func extractPercentileVal(s string) (percentile float64, val float64, err error) {
+	split := strings.Split(s, "=")
+	if len(split) != 2 {
+		return
+	}
+	percentile, err = strconv.ParseFloat(split[0][1:], 64)
+	if err != nil {
+		return
+	}
+	val, err = strconv.ParseFloat(split[1], 64)
+	return
+}
+
 func (e *Exporter) extractInfoMetrics(ch chan<- prometheus.Metric, info string, dbCount int) {
 	keyValues := map[string]string{}
 	handledDBs := map[string]bool{}
+	cmdCount := map[string]uint64{}
+	cmdSum := map[string]float64{}
+	cmdLatencyMap := map[string]map[float64]float64{}
 
 	fieldClass := ""
 	lines := strings.Split(info, "\n")
@@ -70,16 +86,28 @@ func (e *Exporter) extractInfoMetrics(ch chan<- prometheus.Metric, info string, 
 			e.handleMetricsServer(ch, fieldKey, fieldValue)
 
 		case "Commandstats":
-			e.handleMetricsCommandStats(ch, fieldKey, fieldValue)
+			cmd, calls, usecsTotal := e.handleMetricsCommandStats(ch, fieldKey, fieldValue)
+			cmdCount[cmd] = uint64(calls)
+			cmdSum[cmd] = usecsTotal
+			continue
+
+		case "Latencystats":
+			e.handleMetricsLatencyStats(fieldKey, fieldValue, cmdLatencyMap)
+			continue
+
+		case "Errorstats":
+			e.handleMetricsErrorStats(ch, fieldKey, fieldValue)
 			continue
 
 		case "Keyspace":
-			if keysTotal, keysEx, avgTTL, ok := parseDBKeyspaceString(fieldKey, fieldValue); ok {
+			if keysTotal, keysEx, avgTTL, keysCached, ok := parseDBKeyspaceString(fieldKey, fieldValue); ok {
 				dbName := fieldKey
 
 				e.registerConstMetricGauge(ch, "db_keys", keysTotal, dbName)
 				e.registerConstMetricGauge(ch, "db_keys_expiring", keysEx, dbName)
-
+				if keysCached > -1 {
+					e.registerConstMetricGauge(ch, "db_keys_cached", keysCached, dbName)
+				}
 				if avgTTL > -1 {
 					e.registerConstMetricGauge(ch, "db_avg_ttl_seconds", avgTTL, dbName)
 				}
@@ -97,6 +125,10 @@ func (e *Exporter) extractInfoMetrics(ch chan<- prometheus.Metric, info string, 
 
 		e.parseAndRegisterConstMetric(ch, fieldKey, fieldValue)
 	}
+
+	// To be able to generate the latency summaries we need the count and sum that we get
+	// from #Commandstats processing and the percentile info that we get from the #Latencystats processing
+	e.generateCommandLatencySummaries(ch, cmdLatencyMap, cmdCount, cmdSum)
 
 	for dbIndex := 0; dbIndex < dbCount; dbIndex++ {
 		dbName := "db" + strconv.Itoa(dbIndex)
@@ -124,6 +156,16 @@ func (e *Exporter) extractInfoMetrics(ch chan<- prometheus.Metric, info string, 
 	}
 }
 
+func (e *Exporter) generateCommandLatencySummaries(ch chan<- prometheus.Metric, cmdLatencyMap map[string]map[float64]float64, cmdCount map[string]uint64, cmdSum map[string]float64) {
+	for cmd, latencyMap := range cmdLatencyMap {
+		count, okCount := cmdCount[cmd]
+		sum, okSum := cmdSum[cmd]
+		if okCount && okSum {
+			e.registerConstSummary(ch, "latency_percentiles_usec", []string{"cmd"}, count, sum, latencyMap, cmd)
+		}
+	}
+}
+
 func (e *Exporter) extractClusterInfoMetrics(ch chan<- prometheus.Metric, info string) {
 	lines := strings.Split(info, "\r\n")
 
@@ -145,9 +187,9 @@ func (e *Exporter) extractClusterInfoMetrics(ch chan<- prometheus.Metric, info s
 }
 
 /*
-	valid example: db0:keys=1,expires=0,avg_ttl=0
+	valid example: db0:keys=1,expires=0,avg_ttl=0,cached_keys=0
 */
-func parseDBKeyspaceString(inputKey string, inputVal string) (keysTotal float64, keysExpiringTotal float64, avgTTL float64, ok bool) {
+func parseDBKeyspaceString(inputKey string, inputVal string) (keysTotal float64, keysExpiringTotal float64, avgTTL float64, keysCachedTotal float64, ok bool) {
 	log.Debugf("parseDBKeyspaceString inputKey: [%s] inputVal: [%s]", inputKey, inputVal)
 
 	if !strings.HasPrefix(inputKey, "db") {
@@ -156,7 +198,7 @@ func parseDBKeyspaceString(inputKey string, inputVal string) (keysTotal float64,
 	}
 
 	split := strings.Split(inputVal, ",")
-	if len(split) != 3 && len(split) != 2 {
+	if len(split) < 2 || len(split) > 4 {
 		log.Debugf("parseDBKeyspaceString strings.Split(inputVal) invalid: %#v", split)
 		return
 	}
@@ -178,6 +220,14 @@ func parseDBKeyspaceString(inputKey string, inputVal string) (keysTotal float64,
 			return
 		}
 		avgTTL /= 1000
+	}
+
+	keysCachedTotal = -1
+	if len(split) > 3 {
+		if keysCachedTotal, err = extractVal(split[3]); err != nil {
+			log.Debugf("parseDBKeyspaceString extractVal(split[3]) invalid, err: %s", err)
+			return
+		}
 	}
 
 	ok = true
@@ -274,13 +324,19 @@ func (e *Exporter) handleMetricsServer(ch chan<- prometheus.Metric, fieldKey str
 	}
 }
 
-func parseMetricsCommandStats(fieldKey string, fieldValue string) (string, float64, float64, error) {
+func parseMetricsCommandStats(fieldKey string, fieldValue string) (cmd string, calls float64, rejectedCalls float64, failedCalls float64, usecTotal float64, extendedStats bool, errorOut error) {
 	/*
-		Format:
-		cmdstat_get:calls=21,usec=175,usec_per_call=8.33
-		cmdstat_set:calls=61,usec=3139,usec_per_call=51.46
-		cmdstat_setex:calls=75,usec=1260,usec_per_call=16.80
-		cmdstat_georadius_ro:calls=75,usec=1260,usec_per_call=16.80
+		There are 2 formats. (One before Redis 6.2 and one after it)
+		Format before v6.2:
+			cmdstat_get:calls=21,usec=175,usec_per_call=8.33
+			cmdstat_set:calls=61,usec=3139,usec_per_call=51.46
+			cmdstat_setex:calls=75,usec=1260,usec_per_call=16.80
+			cmdstat_georadius_ro:calls=75,usec=1260,usec_per_call=16.80
+		Format from v6.2 forward:
+			cmdstat_get:calls=21,usec=175,usec_per_call=8.33,rejected_calls=0,failed_calls=0
+			cmdstat_set:calls=61,usec=3139,usec_per_call=51.46,rejected_calls=0,failed_calls=0
+			cmdstat_setex:calls=75,usec=1260,usec_per_call=16.80,rejected_calls=0,failed_calls=0
+			cmdstat_georadius_ro:calls=75,usec=1260,usec_per_call=16.80,rejected_calls=0,failed_calls=0
 
 		broken up like this:
 			fieldKey  = cmdstat_get
@@ -288,33 +344,154 @@ func parseMetricsCommandStats(fieldKey string, fieldValue string) (string, float
 	*/
 
 	const cmdPrefix = "cmdstat_"
+	extendedStats = false
 
 	if !strings.HasPrefix(fieldKey, cmdPrefix) {
-		return "", 0.0, 0.0, errors.New("Invalid fieldKey")
+		errorOut = errors.New("Invalid fieldKey")
+		return
 	}
-	cmd := strings.TrimPrefix(fieldKey, cmdPrefix)
+	cmd = strings.TrimPrefix(fieldKey, cmdPrefix)
 
 	splitValue := strings.Split(fieldValue, ",")
-	if len(splitValue) < 3 {
-		return "", 0.0, 0.0, errors.New("Invalid fieldValue")
+	splitLen := len(splitValue)
+	if splitLen < 3 {
+		errorOut = errors.New("Invalid fieldValue")
+		return
 	}
 
-	calls, err := extractVal(splitValue[0])
+	// internal error variable
+	var err error
+	calls, err = extractVal(splitValue[0])
 	if err != nil {
-		return "", 0.0, 0.0, errors.New("Invalid splitValue[0]")
+		errorOut = errors.New("Invalid splitValue[0]")
+		return
 	}
 
-	usecTotal, err := extractVal(splitValue[1])
+	usecTotal, err = extractVal(splitValue[1])
 	if err != nil {
-		return "", 0.0, 0.0, errors.New("Invalid splitValue[1]")
+		errorOut = errors.New("Invalid splitValue[1]")
+		return
 	}
 
-	return cmd, calls, usecTotal, nil
+	// pre 6.2 did not include rejected/failed calls stats so if we have less than 5 tokens we're done here
+	if splitLen < 5 {
+		return
+	}
+
+	rejectedCalls, err = extractVal(splitValue[3])
+	if err != nil {
+		errorOut = errors.New("Invalid rejected_calls while parsing splitValue[3]")
+		return
+	}
+
+	failedCalls, err = extractVal(splitValue[4])
+	if err != nil {
+		errorOut = errors.New("Invalid failed_calls while parsing splitValue[4]")
+		return
+	}
+	extendedStats = true
+	return
 }
 
-func (e *Exporter) handleMetricsCommandStats(ch chan<- prometheus.Metric, fieldKey string, fieldValue string) {
-	if cmd, calls, usecTotal, err := parseMetricsCommandStats(fieldKey, fieldValue); err == nil {
+func parseMetricsLatencyStats(fieldKey string, fieldValue string) (cmd string, percentileMap map[float64]float64, errorOut error) {
+	/*
+		# Latencystats
+		latency_percentiles_usec_rpop:p50=0.001,p99=1.003,p99.9=4.015
+		latency_percentiles_usec_zadd:p50=0.001,p99=1.003,p99.9=4.015
+		latency_percentiles_usec_hset:p50=0.001,p99=1.003,p99.9=3.007
+		latency_percentiles_usec_set:p50=0.001,p99=1.003,p99.9=4.015
+		latency_percentiles_usec_lpop:p50=0.001,p99=1.003,p99.9=4.015
+		latency_percentiles_usec_lpush:p50=0.001,p99=1.003,p99.9=4.015
+		latency_percentiles_usec_lrange:p50=17.023,p99=21.119,p99.9=27.007
+		latency_percentiles_usec_get:p50=0.001,p99=1.003,p99.9=3.007
+		latency_percentiles_usec_mset:p50=1.003,p99=1.003,p99.9=1.003
+		latency_percentiles_usec_spop:p50=0.001,p99=1.003,p99.9=1.003
+		latency_percentiles_usec_incr:p50=0.001,p99=1.003,p99.9=3.007
+		latency_percentiles_usec_rpush:p50=0.001,p99=1.003,p99.9=4.015
+		latency_percentiles_usec_zpopmin:p50=0.001,p99=1.003,p99.9=3.007
+		latency_percentiles_usec_config|resetstat:p50=280.575,p99=280.575,p99.9=280.575
+		latency_percentiles_usec_config|get:p50=8.031,p99=27.007,p99.9=27.007
+		latency_percentiles_usec_ping:p50=0.001,p99=1.003,p99.9=1.003
+		latency_percentiles_usec_sadd:p50=0.001,p99=1.003,p99.9=3.007
+
+		broken up like this:
+			fieldKey  = latency_percentiles_usec_ping
+			fieldValue= p50=0.001,p99=1.003,p99.9=3.007
+	*/
+
+	const cmdPrefix = "latency_percentiles_usec_"
+	percentileMap = map[float64]float64{}
+
+	if !strings.HasPrefix(fieldKey, cmdPrefix) {
+		errorOut = errors.New("Invalid fieldKey")
+		return
+	}
+	cmd = strings.TrimPrefix(fieldKey, cmdPrefix)
+	splitValue := strings.Split(fieldValue, ",")
+	splitLen := len(splitValue)
+	if splitLen < 1 {
+		errorOut = errors.New("Invalid fieldValue")
+		return
+	}
+	for pos, kv := range splitValue {
+		percentile, value, err := extractPercentileVal(kv)
+		if err != nil {
+			errorOut = fmt.Errorf("Invalid splitValue[%d]", pos)
+			return
+		}
+		percentileMap[percentile] = value
+	}
+	return
+}
+
+func parseMetricsErrorStats(fieldKey string, fieldValue string) (errorType string, count float64, errorOut error) {
+	/*
+		Format:
+			errorstat_ERR:count=4
+			errorstat_NOAUTH:count=3
+
+		broken up like this:
+			fieldKey  = errorstat_ERR
+			fieldValue= count=3
+	*/
+
+	const prefix = "errorstat_"
+
+	if !strings.HasPrefix(fieldKey, prefix) {
+		errorOut = errors.New("Invalid fieldKey. errorstat_ prefix not present")
+		return
+	}
+	errorType = strings.TrimPrefix(fieldKey, prefix)
+	count, err := extractVal(fieldValue)
+	if err != nil {
+		errorOut = errors.New("Invalid error type on splitValue[0]")
+		return
+	}
+	return
+}
+
+func (e *Exporter) handleMetricsCommandStats(ch chan<- prometheus.Metric, fieldKey string, fieldValue string) (cmd string, calls float64, usecTotal float64) {
+	cmd, calls, rejectedCalls, failedCalls, usecTotal, extendedStats, err := parseMetricsCommandStats(fieldKey, fieldValue)
+	if err == nil {
 		e.registerConstMetric(ch, "commands_total", calls, prometheus.CounterValue, cmd)
 		e.registerConstMetric(ch, "commands_duration_seconds_total", usecTotal/1e6, prometheus.CounterValue, cmd)
+		if extendedStats {
+			e.registerConstMetric(ch, "commands_rejected_calls_total", rejectedCalls, prometheus.CounterValue, cmd)
+			e.registerConstMetric(ch, "commands_failed_calls_total", failedCalls, prometheus.CounterValue, cmd)
+		}
+	}
+	return
+}
+
+func (e *Exporter) handleMetricsLatencyStats(fieldKey string, fieldValue string, cmdLatencyMap map[string]map[float64]float64) {
+	cmd, latencyMap, err := parseMetricsLatencyStats(fieldKey, fieldValue)
+	if err == nil {
+		cmdLatencyMap[cmd] = latencyMap
+	}
+}
+
+func (e *Exporter) handleMetricsErrorStats(ch chan<- prometheus.Metric, fieldKey string, fieldValue string) {
+	if errorPrefix, count, err := parseMetricsErrorStats(fieldKey, fieldValue); err == nil {
+		e.registerConstMetric(ch, "errors_total", count, prometheus.CounterValue, errorPrefix)
 	}
 }

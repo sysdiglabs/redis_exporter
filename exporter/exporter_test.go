@@ -30,15 +30,21 @@ const (
 )
 
 var (
-	keys         = []string{}
-	keysExpiring = []string{}
-	listKeys     = []string{}
-	ts           = int32(time.Now().Unix())
+	keys            []string
+	keysExpiring    []string
+	listKeys        []string
+	singleStringKey string
+	ts              = int32(time.Now().Unix())
 
 	dbNumStr        = "11"
 	altDBNumStr     = "12"
 	invalidDBNumStr = "16"
 	dbNumStrFull    = fmt.Sprintf("db%s", dbNumStr)
+
+	TestStreamTimestamps = []string{
+		"1638006862416-0",
+		"1638006862417-2",
+	}
 )
 
 const (
@@ -56,6 +62,11 @@ func getTestExporterWithOptions(opt Options) *Exporter {
 		panic("missing env var TEST_REDIS_URI")
 	}
 	e, _ := NewRedisExporter(addr, opt)
+	return e
+}
+
+func getTestExporterWithAddr(addr string) *Exporter {
+	e, _ := NewRedisExporter(addr, Options{Namespace: "test", Registry: prometheus.NewRegistry()})
 	return e
 }
 
@@ -92,11 +103,13 @@ func setupKeys(t *testing.T, c redis.Conn, dbNumStr string) error {
 	c.Do("SADD", TestSetName, "test-val-1")
 	c.Do("SADD", TestSetName, "test-val-2")
 
+	c.Do("SET", singleStringKey, "this-is-a-string")
+
 	// Create test streams
 	c.Do("XGROUP", "CREATE", TestStreamName, "test_group_1", "$", "MKSTREAM")
 	c.Do("XGROUP", "CREATE", TestStreamName, "test_group_2", "$", "MKSTREAM")
-	c.Do("XADD", TestStreamName, "*", "field_1", "str_1")
-	c.Do("XADD", TestStreamName, "*", "field_2", "str_2")
+	c.Do("XADD", TestStreamName, TestStreamTimestamps[0], "field_1", "str_1")
+	c.Do("XADD", TestStreamName, TestStreamTimestamps[1], "field_2", "str_2")
 	// Process messages to assign Consumers to their groups
 	c.Do("XREADGROUP", "GROUP", "test_group_1", "test_consumer_1", "COUNT", "1", "STREAMS", TestStreamName, ">")
 	c.Do("XREADGROUP", "GROUP", "test_group_1", "test_consumer_2", "COUNT", "1", "STREAMS", TestStreamName, ">")
@@ -125,6 +138,7 @@ func deleteKeys(c redis.Conn, dbNumStr string) {
 
 	c.Do("DEL", TestSetName)
 	c.Do("DEL", TestStreamName)
+	c.Do("DEL", singleStringKey)
 }
 
 func setupDBKeys(t *testing.T, uri string) error {
@@ -179,7 +193,7 @@ func deleteKeysFromDB(t *testing.T, addr string) error {
 	return nil
 }
 
-func deleteKeysFromDBCluster(t *testing.T, addr string) error {
+func deleteKeysFromDBCluster(addr string) error {
 	e := Exporter{redisAddr: addr}
 	c, err := e.connectToRedisCluster()
 	if err != nil {
@@ -205,6 +219,26 @@ func TestIncludeSystemMemoryMetric(t *testing.T) {
 			t.Errorf("want metrics to include total_system_memory_bytes, have:\n%s", body)
 		} else if !inc && strings.Contains(body, "total_system_memory_bytes") {
 			t.Errorf("did NOT want metrics to include total_system_memory_bytes, have:\n%s", body)
+		}
+
+		ts.Close()
+	}
+}
+
+func TestIncludeConfigMetrics(t *testing.T) {
+	for _, inc := range []bool{false, true} {
+		r := prometheus.NewRegistry()
+		ts := httptest.NewServer(promhttp.HandlerFor(r, promhttp.HandlerOpts{}))
+		e, _ := NewRedisExporter(os.Getenv("TEST_REDIS_URI"), Options{Namespace: "test", InclConfigMetrics: inc})
+		r.Register(e)
+
+		what := `test_config_key_value{key="appendonly",value="no"}`
+
+		body := downloadURL(t, ts.URL+"/metrics")
+		if inc && !strings.Contains(body, what) {
+			t.Errorf("want metrics to include test_config_key_value, have:\n%s", body)
+		} else if !inc && strings.Contains(body, what) {
+			t.Errorf("did NOT want metrics to include test_config_key_value, have:\n%s", body)
 		}
 
 		ts.Close()
@@ -323,6 +357,28 @@ func TestConnectionDurations(t *testing.T) {
 	}
 }
 
+func TestKeyDbMetrics(t *testing.T) {
+	setupDBKeys(t, os.Getenv("TEST_KEYDB01_URI"))
+	defer deleteKeysFromDB(t, os.Getenv("TEST_KEYDB01_URI"))
+
+	for _, want := range []string{
+		`test_db_keys_cached`,
+		`test_storage_provider_read_hits`,
+	} {
+		r := prometheus.NewRegistry()
+		ts := httptest.NewServer(promhttp.HandlerFor(r, promhttp.HandlerOpts{}))
+		e, _ := NewRedisExporter(os.Getenv("TEST_KEYDB01_URI"), Options{Namespace: "test"})
+		r.Register(e)
+
+		body := downloadURL(t, ts.URL+"/metrics")
+		if !strings.Contains(body, want) {
+			t.Errorf("want metrics to include %s, have:\n%s", want, body)
+		}
+
+		ts.Close()
+	}
+}
+
 func init() {
 	rand.Seed(time.Now().UnixNano())
 
@@ -335,14 +391,14 @@ func init() {
 	}
 
 	for _, n := range []string{"john", "paul", "ringo", "george"} {
-		key := fmt.Sprintf("key_%s_%d", n, ts)
-		keys = append(keys, key)
+		keys = append(keys, fmt.Sprintf("key_%s_%d", n, ts))
 	}
+
+	singleStringKey = fmt.Sprintf("key_string_%d", ts)
 
 	listKeys = append(listKeys, "beatles_list")
 
 	for _, n := range []string{"A.J.", "Howie", "Nick", "Kevin", "Brian"} {
-		key := fmt.Sprintf("key_exp_%s_%d", n, ts)
-		keysExpiring = append(keysExpiring, key)
+		keysExpiring = append(keysExpiring, fmt.Sprintf("key_exp_%s_%d", n, ts))
 	}
 }

@@ -16,12 +16,20 @@ services:
       - 6383
 
   - name: redis6
-    image: redis:6
+    image: redis:6.2
     pull: if-not-exists
     commands:
       - "redis-server --protected-mode no --dbfilename dump6.rdb"
     ports:
       - 6379
+
+  - name: redis7
+    image: redis:7.0
+    pull: if-not-exists
+    commands:
+      - "redis-server --port 6384 --protected-mode no --dbfilename dump7.rdb"
+    ports:
+      - 6384
 
   - name: pwd-redis5
     image: redis:5
@@ -48,7 +56,7 @@ services:
       - 6381
 
   - name: keydb-01
-    image: "eqalpha/keydb:x86_64_v5.3.0"
+    image: "eqalpha/keydb:x86_64_v6.3.1"
     pull: if-not-exists
     commands:
       - "keydb-server --protected-mode no --port 6401 --dbfilename dump-keydb-01.rdb"
@@ -56,7 +64,7 @@ services:
       - 6401
 
   - name: keydb-02
-    image: "eqalpha/keydb:x86_64_v5.3.0"
+    image: "eqalpha/keydb:x86_64_v6.3.1"
     pull: if-not-exists
     commands:
       - "keydb-server --protected-mode no --port 6402 --active-replica yes --replicaof keydb-01 6401  --dbfilename dump-keydb-02.rdb"
@@ -77,10 +85,10 @@ services:
 
 steps:
   - name: start
-    image: "golang:1.17"
+    image: "golang:1.18"
     pull: if-not-exists
     commands:
-      - sleep 10
+      - sleep 20
       - 'echo "start"'
     when:
       event:
@@ -150,7 +158,7 @@ steps:
       - start
 
   - name: tests
-    image: "golang:1.17"
+    image: "golang:1.18"
     pull: if-not-exists
     environment:
       GO111MODULE: on
@@ -169,7 +177,7 @@ steps:
 
 
   - name: mixins
-    image: golang:1.17
+    image: golang:1.18
     pull: if-not-exists
     commands:
       - cd ./contrib/redis-mixin
@@ -186,7 +194,7 @@ steps:
 
 
   - name: coverage-codecov
-    image: golang:1.17
+    image: golang:1.18
     pull: if-not-exists
     environment:
       CODECOV_TOKEN:
@@ -204,7 +212,7 @@ steps:
 
 
   - name: coverage-coveralls
-    image: "golang:1.17"
+    image: "golang:1.18"
     pull: if-not-exists
     environment:
       GO111MODULE: on
@@ -223,7 +231,7 @@ steps:
 
 
   - name: build-binaries
-    image: "golang:1.17"
+    image: "golang:1.18"
     pull: if-not-exists
     environment:
       GO111MODULE: on
@@ -578,7 +586,7 @@ steps:
 
 
   - name: release-github-binaries
-    image: "golang:1.17"
+    image: "golang:1.18"
     pull: if-not-exists
     environment:
       GITHUB_TOKEN:

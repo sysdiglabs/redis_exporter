@@ -26,6 +26,7 @@ test:
 	TEST_REDIS_URI="redis://redis6:6379" \
 	TEST_REDIS5_URI="redis://redis5:6383" \
 	TEST_REDIS6_URI="redis://redis6:6379" \
+	TEST_REDIS7_URI="redis://redis7:6384" \
 	TEST_REDIS_2_8_URI="redis://redis-2-8:6381" \
 	TEST_KEYDB01_URI="redis://keydb-01:6401" \
 	TEST_KEYDB02_URI="redis://keydb-02:6402" \
@@ -70,13 +71,14 @@ GO_LDFLAGS:="-s -w -extldflags \"-static\" -X main.BuildVersion=${DRONE_TAG} -X 
 
 .PHONE: build-binaries
 build-binaries:
-	go get github.com/oliver006/gox@master
+	go install github.com/oliver006/gox@master
 
 	rm -rf .build | true
 
 	export CGO_ENABLED=0 ; \
 	gox -os="linux windows freebsd netbsd openbsd"        -arch="amd64 386" -verbose -rebuild -ldflags $(GO_LDFLAGS) -output ".build/redis_exporter-${DRONE_TAG}.{{.OS}}-{{.Arch}}/{{.Dir}}" && \
 	gox -os="darwin solaris illumos"                      -arch="amd64"     -verbose -rebuild -ldflags $(GO_LDFLAGS) -output ".build/redis_exporter-${DRONE_TAG}.{{.OS}}-{{.Arch}}/{{.Dir}}" && \
+	gox -os="darwin"                                      -arch="arm64"     -verbose -rebuild -ldflags $(GO_LDFLAGS) -output ".build/redis_exporter-${DRONE_TAG}.{{.OS}}-{{.Arch}}/{{.Dir}}" && \
 	gox -os="linux freebsd netbsd"                        -arch="arm"       -verbose -rebuild -ldflags $(GO_LDFLAGS) -output ".build/redis_exporter-${DRONE_TAG}.{{.OS}}-{{.Arch}}/{{.Dir}}" && \
 	gox -os="linux" -arch="arm64 mips64 mips64le ppc64 ppc64le s390x"       -verbose -rebuild -ldflags $(GO_LDFLAGS) -output ".build/redis_exporter-${DRONE_TAG}.{{.OS}}-{{.Arch}}/{{.Dir}}" && \
 	echo "done"
