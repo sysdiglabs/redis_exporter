@@ -1,4 +1,4 @@
-FROM golang:1.18.3 as builder
+FROM golang:1.20.0 as builder
 WORKDIR /go/src/github.com/oliver006/redis_exporter/
 
 ADD .  /go/src/github.com/oliver006/redis_exporter/
