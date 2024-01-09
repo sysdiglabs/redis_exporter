@@ -19,6 +19,7 @@ jobs:
         exporter: redis-exporter
         artifactory_token: ${{ secrets.GAR_DEV_RW_JSON_KEY }}
         artifactory_username: _json_key
+        sysdig_secure_token: ${{ secrets.SYSDIG_SECURE_TOKEN }}
         tag_name: ${{ github.event.release.tag_name }}
         target: ${{ matrix.docker }}
         repository: us-docker.pkg.dev
